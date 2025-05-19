@@ -3,12 +3,7 @@ extern crate calamine;
 
 use std::ffi::{CString, CStr};
 use libc::{c_int, c_void, c_char, c_double, uintptr_t};
-
 use calamine::{Sheets, DataType};
-
-//
-// Prepare Ruby bindings
-//
 
 // VALUE (pointer to a ruby object)
 type Value = uintptr_t;
@@ -44,68 +39,62 @@ extern "C" {
     fn rb_string_value_cstr(str: *const Value) -> *const c_char;
 }
 
-//
-// Utils
-//
-
 // C string from Rust string
-pub fn cstr(string: &str) -> CString {
-    CString::new(string).unwrap()
+fn cstr(string: &str) -> CString {
+    CString::new(string).unwrap_or_else(|_| CString::new("").unwrap())
 }
 
 // Rust string from Ruby string
-pub fn rstr(string: Value) -> String {
+fn rstr(string: Value) -> Result<String, std::str::Utf8Error> {
     unsafe {
         let s = rb_string_value_cstr(&string);
-        CStr::from_ptr(s).to_string_lossy().into_owned()
+        CStr::from_ptr(s).to_str().map(|s| s.to_string())
     }
 }
 
-//
-// Functions to use in Ruby
-//
-
 // Read the sheet
 unsafe fn read(this: Value, rb_file_name: Value) -> Value {
-    let mut document =
-        Sheets::open(rstr(rb_file_name))
-        .expect("Cannot open file!");
+    let file_name = match rstr(rb_file_name) {
+        Ok(name) => name,
+        Err(_) => return NIL,
+    };
 
-    // Open first worksheet by default
-    //
-    // TODO: allow use different worksheets
-    let sheet = document.worksheet_range_by_index(0).unwrap();
+    let mut document = match Sheets::open(&file_name) {  // Added mut here
+        Ok(doc) => doc,
+        Err(_) => return NIL,
+    };
+
+    let sheet = match document.worksheet_range_by_index(0) {
+        Ok(s) => s,
+        Err(_) => return NIL,
+    };
 
     let rows = rb_ary_new();
 
     for row in sheet.rows() {
         let new_row = rb_ary_new();
 
-        for (_, c) in row.iter().enumerate() {
-            rb_ary_push(
-                new_row,
-                match *c {
-                    // vba error
-                    DataType::Error(_) => NIL,
-                    DataType::Empty => NIL,
-                    DataType::Float(ref f) => rb_float_new(*f as c_double),
-                    DataType::Int(ref i) => rb_int2big(*i as c_int),
-                    DataType::Bool(ref b) => if *b { TRUE } else { FALSE },
-                    DataType::String(ref s) => {
-                        let st = s.trim();
-                        if st.is_empty() {
-                            NIL
-                        } else {
-                            rb_utf8_str_new_cstr(cstr(st).as_ptr())
-                        }
+        for c in row.iter() {
+            let value = match c {  // Removed * dereference
+                DataType::Error(_) => NIL,
+                DataType::Empty => NIL,
+                DataType::Float(f) => rb_float_new(*f as c_double),  // Added * dereference
+                DataType::Int(i) => rb_int2big(*i as c_int),  // Added * dereference
+                DataType::Bool(b) => if *b { TRUE } else { FALSE },  // Added * dereference
+                DataType::String(s) => {
+                    let st = s.trim();
+                    if st.is_empty() {
+                        NIL
+                    } else {
+                        rb_utf8_str_new_cstr(cstr(st).as_ptr())
                     }
                 }
-            );
+            };
+            rb_ary_push(new_row, value);
         }
 
         rb_ary_push(rows, new_row);
     }
-
 
     // Set instance variables
     rb_iv_set(
@@ -129,24 +118,16 @@ unsafe fn read(this: Value, rb_file_name: Value) -> Value {
     this
 }
 
-// Init_libfastsheet symbol is an entrypoint for the lib
-//
-// This function will be executed when we require the lib.
-//
 #[no_mangle]
-#[allow(non_snake_case)]
-pub unsafe extern fn Init_libfastsheet() {
-    let Fastsheet =
-        rb_define_module(cstr("Fastsheet").as_ptr());
-
-    let Sheet =
-        rb_define_class_under(Fastsheet, cstr("Sheet").as_ptr(), rb_cObject);
+pub unsafe extern "C" fn Init_libfastsheet() {
+    let fastsheet = rb_define_module(cstr("Fastsheet").as_ptr());
+    let sheet = rb_define_class_under(fastsheet, cstr("Sheet").as_ptr(), rb_cObject);
 
     rb_define_method(
-        Sheet,
+        sheet,
         cstr("read!").as_ptr(),
-        // Rust function as pointer to C function
         read as *const c_void,
         1 as c_int
     );
 }
+

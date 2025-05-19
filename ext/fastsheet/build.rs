@@ -53,7 +53,7 @@ fn main() {
             let msg = "Error! Could not find LIBRUBY_A or RUBY_SO_NAME. \
             This means that no static, or dynamic libruby was found. \
             Possible solution: build a new Ruby with the `--enable-shared` configure opt.";
-            panic!(msg)
+            panic!("{}", msg)
         }
     }
 
